@@ -78,6 +78,49 @@ class LinksTest(unittest.TestCase):
         for value in ("../settings", "", "ab12;echo bad", "deadbeef"):
             self.assertNotEqual(self.run_cli("link", value, check=False).returncode, 0)
 
+    def run_function(self, command, answers="", overrides=""):
+        functions = SCRIPT.read_text(encoding="utf-8").split('case "${1:-menu}" in')[0]
+        # Exercise real interactive functions without starting host services.
+        harness = self.data / "harness.sh"
+        harness.write_text(functions + "\napply_config() { :; }\n" + overrides + "\n" + command, encoding="utf-8", newline="\n")
+        result = subprocess.run(
+            ["sh", str(harness)],
+            input=answers.encode("utf-8"), env={**os.environ, "MIERUSH_DATA_DIR": str(self.data)},
+            capture_output=True,
+        )
+        result.stdout = result.stdout.decode("utf-8").replace("\r\n", "\n")
+        result.stderr = result.stderr.decode("utf-8").replace("\r\n", "\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result
+
+    def test_quick_creation_only_needs_one_enter(self):
+        result = self.run_function("create_node", "\n")
+        nodes = [json.loads(f.read_text()) for f in (self.data / "nodes").glob("*.json")]
+        created = next(n for n in nodes if n["id"] != "ab12")
+        self.assertEqual(created["name"], "mieru-2")
+        self.assertEqual(created["host"], "example.org")
+        self.assertEqual(created["protocol"], "TCP")
+        self.assertNotEqual(created["port"], 5102)
+        self.assertEqual(result.stdout.count("mierus://"), 1)
+        self.assertNotIn("监听端口 [", result.stderr)
+        self.assertNotIn("创建数量 [", result.stderr)
+
+    def test_batch_and_number_selection(self):
+        self.run_function("create_node batch", "批量节点\n3\n")
+        nodes = json.loads(self.run_cli("gen").stdout)
+        self.assertEqual(len(nodes["users"]), 4)
+        self.assertEqual(len({p["port"] for p in nodes["portBindings"]}), 4)
+        result = self.run_function("select_node", "1\n")
+        ids = sorted(f.stem for f in (self.data / "nodes").glob("*.json"))
+        self.assertEqual(result.stdout.strip(), ids[0])
+
+    def test_auto_host_is_cached(self):
+        (self.data / "settings.json").write_text(json.dumps({"host": "", "mtu": 1400, "seed": 42}))
+        self.run_function("resolve_host", overrides="curl() { printf '203.0.113.10'; }")
+        self.assertEqual(json.loads((self.data / "settings.json").read_text())["host"], "203.0.113.10")
+        result = self.run_function("resolve_host", overrides="curl() { exit 99; }")
+        self.assertNotIn("正在识别", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

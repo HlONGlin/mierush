@@ -2,7 +2,7 @@
 # mierush - POSIX sh terminal manager for the official mieru server (mita).
 set -eu
 umask 077
-MIERUSH_VERSION="1.0.0"
+MIERUSH_VERSION="1.1.0"
 DATA="${MIERUSH_DATA_DIR:-/etc/mierush}"
 MITA="${MIERUSH_MITA_BIN:-/usr/local/bin/mita}"
 SELF="/usr/local/bin/mierush"
@@ -123,22 +123,60 @@ link() {
       "#" + (.name|@uri)' "$NODE"
 }
 list_nodes() {
-    printf 'ID\t名称\t端口\t协议\t启用\t地址\n'
-    all_nodes | jq -r '.[] | [.id,.name,.port,.protocol,.enabled,.host] | @tsv'
+    if all_nodes | jq -e 'length == 0' >/dev/null; then
+        say '暂无节点，选择「快速创建」即可生成第一个节点。'; return
+    fi
+    all_nodes | jq -r 'to_entries[] | "  [\(.key + 1)] \(.value.name)  ·  \(if .value.enabled then "已启用" else "已禁用" end)\n      \(.value.host):\(.value.port) / \(.value.protocol)  ID: \(.value.id)"'
+}
+select_node() {
+    list_nodes >&2
+    total=$(all_nodes | jq length)
+    [ "$total" -gt 0 ] || return 1
+    selected=$(ask '选择节点编号 [0 返回]: ') || return 1
+    [ "$selected" != 0 ] && [ -n "$selected" ] || return 1
+    number "$selected" && [ "$selected" -ge 1 ] && [ "$selected" -le "$total" ] || die '节点编号无效'
+    all_nodes | jq -r --argjson n "$selected" '.[$n-1].id'
+}
+resolve_host() {
+    host=$(jq -r .host "$DATA/settings.json")
+    if ! host_ok "$host"; then
+        printf '正在识别公网地址...\n' >&2
+        for endpoint in https://api.ipify.org https://ipv4.icanhazip.com https://api6.ipify.org; do
+            host=$(curl -fsS --connect-timeout 2 --max-time 4 "$endpoint" 2>/dev/null) || host=''
+            host_ok "$host" && break
+        done
+        if ! host_ok "$host"; then
+            host=$(ask '自动识别失败，请输入公网 IP / 域名（仅首次需要）: ')
+        fi
+        host_ok "$host" || die '公网地址无效'
+        tmp=$(mktemp "$DATA/settings.XXXXXX")
+        jq --arg host "$host" '.host=$host' "$DATA/settings.json" > "$tmp"
+        mv "$tmp" "$DATA/settings.json"
+    fi
 }
 create_node() {
-    name=$(ask '节点名称 [mieru]: '); name=${name:-mieru}
-    host=$(jq -r .host "$DATA/settings.json")
-    value=$(ask "公网 IP / 域名 [$host]: "); host=${value:-$host}
-    host_ok "$host" || die "请输入有效 IP 或域名（IPv6 不加方括号）"
-    port=$(ask '监听端口 [自动，从 5102 开始]: ')
-    port=${port:-$(free_port)}
+    mode=${1:-quick}
+    say '──────────────── 创建 mieru 节点 ────────────────'
+    resolve_host
+    port=$(free_port); protocol=TCP; count=1
+    next=$(all_nodes | jq 'length + 1')
+    name=$(ask "节点名称 [mieru-$next，回车直接创建]: "); name=${name:-mieru-$next}
+    case "$mode" in
+      batch)
+        count=$(ask '创建数量 [5]: '); count=${count:-5} ;;
+      custom)
+        value=$(ask "公网 IP / 域名 [$host]: "); host=${value:-$host}
+        host_ok "$host" || die '公网地址无效'
+        value=$(ask "监听端口 [$port]: "); port=${value:-$port}
+        protocol=$(ask '协议 TCP / UDP [TCP]: '); protocol=${protocol:-TCP}
+        count=$(ask '创建数量 [1]: '); count=${count:-1} ;;
+    esac
     port_ok "$port" || die "端口范围为 1025-65535"
     port_free "$port" || die "端口已被占用"
-    protocol=$(ask '协议 TCP / UDP [TCP]: '); protocol=${protocol:-TCP}
     case "$protocol" in TCP|UDP) ;; *) die "协议只能是 TCP 或 UDP" ;; esac
-    count=$(ask '创建数量 [1]: '); count=${count:-1}
     number "$count" && [ "$count" -ge 1 ] && [ "$count" -le 100 ] || die "数量范围为 1-100"
+    say "地址: $host  |  协议: $protocol  |  数量: $count"
+    created=''
     n=1
     while [ "$n" -le "$count" ]; do
         [ "$n" = 1 ] || port=$(free_port)
@@ -150,11 +188,17 @@ create_node() {
           {id:$id,name:$name,host:$host,port:$port,protocol:$protocol,
            username:$username,password:$password,enabled:true,
            handshake:"HANDSHAKE_NO_WAIT",multiplexing:"MULTIPLEXING_OFF"}' > "$DATA/nodes/$id.json"
+        created="$created $id"
         n=$((n + 1))
     done
     apply_config
-    say '创建完成（请在云防火墙/安全组放行对应 TCP 或 UDP 端口）。'
-    export_links
+    say '✓ 节点创建成功，复制下方链接导入客户端：'
+    for id in $created; do
+        node_file "$id"
+        jq -r '"\n【" + .name + "】 " + .host + ":" + (.port|tostring) + " / " + .protocol' "$NODE"
+        link "$id"
+    done
+    say '提示：请在云防火墙/安全组放行上述端口。'
 }
 export_links() {
     for f in "$DATA"/nodes/*.json; do
@@ -165,8 +209,8 @@ export_links() {
     done
 }
 edit_node() {
-    list_nodes
-    id=$(ask '节点 ID: '); node_file "$id"
+    id=$(select_node) || return 0
+    node_file "$id"
     say '1. 名称  2. 公网地址  3. 重置凭据  4. 启用/禁用  5. 删除'
     choice=$(ask '选项: ')
     tmp=$(mktemp "$DATA/nodes/.edit.XXXXXX")
@@ -185,6 +229,12 @@ edit_node() {
     mv "$tmp" "$NODE"
     apply_config
     link "$id"
+}
+show_link() {
+    id=$(select_node) || return 0
+    uri=$(link "$id")
+    say ''; say "$uri"; say ''
+    if has qrencode; then qrencode -t ANSIUTF8 "$uri"; fi
 }
 settings() {
     host=$(jq -r .host "$DATA/settings.json")
@@ -324,34 +374,58 @@ uninstall() {
 }
 menu() {
     while :; do
-        say "\n======== mierush $MIERUSH_VERSION · mieru 节点管理 ========"
-        say ' 1. 安装/更新核心       2. 创建/批量创建节点'
-        say ' 3. 查看节点列表       4. 查看链接/二维码'
-        say ' 5. 导出全部链接       6. 修改/删除/启用节点'
-        say ' 7. 重置全部凭据       8. 全局设置'
-        say ' 9. 启动服务          10. 停止服务'
-        say '11. 重启/应用配置     12. 状态/日志'
-        say '13. 用户流量统计      14. 导出 Base64 订阅'
-        say '15. 卸载               0. 退出'
+        if [ -t 1 ]; then printf '\033[2J\033[H'; fi
+        printf '\n╭────────────────────────────────────────────╮\n'
+        say "  mierush $MIERUSH_VERSION  ·  mieru 节点面板"
+        say '╰────────────────────────────────────────────╯'
+        summary=$(all_nodes | jq -r '"节点 \(length) 个 / 已启用 \([.[] | select(.enabled)] | length) 个"')
+        state='未安装核心'
+        if [ -x "$MITA" ]; then
+            state='已停止'
+            if [ -S "$DATA/runtime/mita.sock" ]; then
+                if core status 2>&1 | grep -q '"RUNNING"'; then state='运行中'; else state='未就绪'; fi
+            fi
+        fi
+        say "  服务: $state  |  $summary"
+        public_host=$(jq -r '.host | if . == "" then "首次创建时自动识别" else . end' "$DATA/settings.json")
+        say "  公网地址: $public_host"
+        say '───────────────── 创建节点 ─────────────────'
+        say ' 1. 快速创建         回车即可生成，默认 TCP'
+        say ' 2. 批量创建         名称 + 数量'
+        say ' 3. 自定义创建       指定地址 / 端口 / 协议'
+        say '───────────────── 管理节点 ─────────────────'
+        say ' 4. 节点列表         5. 链接 / 二维码'
+        say ' 6. 修改 / 删除      7. 导出链接 / 订阅'
+        say '───────────────── 服务设置 ─────────────────'
+        say ' 8. 启动 / 重启      9. 停止服务'
+        say '10. 状态 / 日志     11. 用户流量'
+        say '12. 全局设置        13. 安装 / 更新核心'
+        say '14. 重置全部凭据    15. 卸载'
+        say ' 0. 退出'
         choice=$(ask '选项: ') || return 0
         # Isolate errors so invalid input doesn't close the interactive panel.
         case "$choice" in
             0) return ;;
-            1) sh "$0" install || true ;;
-            2) sh "$0" create || true ;;
-            3) list_nodes ;;
-            4) (list_nodes; id=$(ask '节点 ID: '); uri=$(link "$id"); say "$uri"
-                if has qrencode; then qrencode -t ANSIUTF8 "$uri"; else say '安装 qrencode 可显示二维码'; fi) || true ;;
-            5) export_links ;;
+            1) sh "$0" create || true ;;
+            2) sh "$0" batch || true ;;
+            3) sh "$0" custom || true ;;
+            4) list_nodes ;;
+            5) sh "$0" show-link || true ;;
             6) sh "$0" edit || true ;;
-            7) sh "$0" reset-credentials || true ;;
-            8) sh "$0" settings || true ;;
-            9) sh "$0" apply || true ;;
-            10) service_action stop || true ;;
-            11) sh "$0" apply || true ;;
-            12) status ;;
-            13) core get users || true ;;
-            14) export_links | base64 | tr -d '\r\n'; printf '\n' ;;
+            7) say '1. 原始分享链接  2. Base64 订阅'
+               format=$(ask '导出格式 [1]: ') || return 0
+               case "$format" in
+                   ''|1) export_links ;;
+                   2) export_links | base64 | tr -d '\r\n'; printf '\n' ;;
+                   *) say '无效选项' ;;
+               esac ;;
+            8) sh "$0" apply || true ;;
+            9) service_action stop || true ;;
+            10) status ;;
+            11) core get users || true ;;
+            12) sh "$0" settings || true ;;
+            13) sh "$0" install || true ;;
+            14) sh "$0" reset-credentials || true ;;
             15) sh "$0" uninstall || true; return ;;
             *) say '无效选项' ;;
         esac
@@ -359,7 +433,7 @@ menu() {
     done
 }
 usage() {
-    say 'mierush [install|menu|create|list|link ID|export|subscription|gen|apply|start|stop|restart|status|reset-credentials|uninstall|version]'
+    say 'mierush [install|menu|create|batch|custom|list|show-link|edit|settings|link ID|export|subscription|gen|apply|start|stop|restart|status|reset-credentials|uninstall|version]'
 }
 case "${1:-menu}" in
     version|--version|-v) say "$MIERUSH_VERSION"; exit ;;
@@ -375,7 +449,8 @@ case "${1:-menu}" in
     gen) generate ;;
     *) root; init_data
        case "${1:-menu}" in
-           menu) menu ;; create) create_node ;; edit) edit_node ;; settings) settings ;;
+            menu) menu ;; create) create_node ;; edit) edit_node ;; settings) settings ;;
+            batch) create_node batch ;; custom) create_node custom ;; show-link) show_link ;;
            apply|start|restart) apply_config ;;
            stop) service_action stop ;; status) status ;;
            reset-credentials) reset_credentials ;; uninstall) uninstall ;;

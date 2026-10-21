@@ -2,16 +2,39 @@
 
 参考 [rysh](https://github.com/HlONGlin/rysh) 的 `sh` 数字面板形式，使用官方 **mita** 服务端部署 mieru 节点，生成 `mierus://` 分享链接。支持 Alpine/OpenRC、Debian/Ubuntu/systemd 和 RHEL 系列/systemd，架构为 amd64 或 arm64。
 
-## 一键安装
+## 一键脚本
 
-以 root 执行（不需要 bash）：
+直接使用项目提供的一键脚本完成 mierush 的安装与管理（以 root 运行）：
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/HlONGlin/mierush/main/one-click.sh -o /tmp/mierush-oneclick.sh
-sh /tmp/mierush-oneclick.sh
+```bash
+bash <(curl -fsSL https://github.com/HlONGlin/mierush/raw/main/one-click.sh)
 ```
 
-选择 `1` 安装，再选择 `6` 进入节点面板。安装后可在任意目录执行：
+脚本提供数字菜单：
+
+1. 安装或更新 mierush（含 mita 核心与依赖）
+2. 启动 mierush / mita 服务
+3. 停止 mierush / mita 服务
+4. 彻底卸载并清除节点数据
+5. 重置节点凭据（保留节点记录）
+6. 进入 mierush 节点管理菜单
+0. 退出
+
+脚本会从本项目 `main` 分支下载 `mierush.sh`，安装到 `/usr/local/bin/mierush`，并自动安装依赖、mita 核心和 OpenRC / systemd 服务。安装完成后选择 `6` 进入节点管理菜单，即可创建第一个 mieru 节点。
+
+Alpine 最小系统默认没有 `bash`，而 `bash <(...)` 需要 bash 才能执行，请先安装：
+
+```sh
+apk add bash curl ca-certificates
+```
+
+也可以不使用 bash：
+
+```sh
+curl -fsSL https://github.com/HlONGlin/mierush/raw/main/one-click.sh -o /tmp/mierush-oneclick.sh && sh /tmp/mierush-oneclick.sh
+```
+
+部署完成后，在任意目录输入 **`mi`** 即可直接唤出面板（等价于 `mierush`）：
 
 ```sh
 mi
@@ -30,7 +53,26 @@ mi
 
 ## 创建和导入
 
-面板选择 `2`，填写名称、公网 IP / 域名、端口、协议和数量。IPv6 输入不加方括号，链接中会自动补全。服务器在 NAT 后面时，填写客户端实际访问的地址，并保证填写的端口与外部映射端口一致。
+进入 `mi` 面板后：
+
+- **`1` 快速创建**：只需输入名称，也可以直接回车使用自动名称。公网地址自动识别并保存，端口、TCP 协议及凭据自动配置。
+- **`2` 批量创建**：输入名称和数量即可，默认创建 5 个节点。
+- **`3` 自定义创建**：需要指定公网地址、端口或 UDP 时使用。
+
+地址识别失败时只在首次创建时要求填写，后续复用已保存地址。可以在 `12` 全局设置中修改默认地址。IPv6 输入不加方括号，链接中会自动补全。服务器在 NAT 后面时，请填写客户端实际访问的地址，并保证填写的端口与外部映射端口一致。
+
+面板顶部显示服务状态、节点总数、已启用数量和公网地址。查看链接、修改和删除节点时直接选择列表编号，无需复制节点 ID。创建成功后只展示本次新建节点的链接。
+
+```text
+  1. 快速创建          2. 批量创建
+  3. 自定义创建        4. 节点列表
+  5. 链接 / 二维码     6. 修改 / 删除
+  7. 导出链接 / 订阅   8. 启动 / 重启
+  9. 停止服务         10. 状态 / 日志
+ 11. 用户流量         12. 全局设置
+ 13. 安装 / 更新核心  14. 重置全部凭据
+ 15. 卸载              0. 退出
+```
 
 创建后输出的链接形式与示例一致：
 
@@ -52,7 +94,9 @@ mierus://<用户名>:<密码>@<服务器>?handshake-mode=HANDSHAKE_NO_WAIT&mtu=1
 
 ```sh
 mierush install              # 安装/更新核心和依赖
-mierush create               # 交互创建/批量创建
+mierush create               # 快速创建，只询问名称
+mierush batch                # 批量创建，只询问名称和数量
+mierush custom               # 自定义地址、端口、协议和数量
 mierush list                 # 节点列表
 mierush link <节点ID>        # 单条链接
 mierush export               # 导出所有已启用节点
