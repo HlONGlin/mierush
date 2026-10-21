@@ -78,7 +78,7 @@ class LinksTest(unittest.TestCase):
         for value in ("../settings", "", "ab12;echo bad", "deadbeef"):
             self.assertNotEqual(self.run_cli("link", value, check=False).returncode, 0)
 
-    def run_function(self, command, answers="", overrides=""):
+    def run_function(self, command, answers="", overrides="", expected_code=0):
         functions = SCRIPT.read_text(encoding="utf-8").split('case "${1:-menu}" in')[0]
         # Exercise real interactive functions without starting host services.
         harness = self.data / "harness.sh"
@@ -90,11 +90,11 @@ class LinksTest(unittest.TestCase):
         )
         result.stdout = result.stdout.decode("utf-8").replace("\r\n", "\n")
         result.stderr = result.stderr.decode("utf-8").replace("\r\n", "\n")
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, expected_code, result.stderr)
         return result
 
-    def test_quick_creation_only_needs_one_enter(self):
-        result = self.run_function("create_node", "\n")
+    def test_quick_creation_default_port(self):
+        result = self.run_function("create_node", "\n\n")
         nodes = [json.loads(f.read_text()) for f in (self.data / "nodes").glob("*.json")]
         created = next(n for n in nodes if n["id"] != "ab12")
         self.assertEqual(created["name"], "mieru-2")
@@ -102,17 +102,30 @@ class LinksTest(unittest.TestCase):
         self.assertEqual(created["protocol"], "TCP")
         self.assertNotEqual(created["port"], 5102)
         self.assertEqual(result.stdout.count("mierus://"), 1)
-        self.assertNotIn("监听端口 [", result.stderr)
+        self.assertIn("监听端口 [", result.stderr)
         self.assertNotIn("创建数量 [", result.stderr)
 
     def test_batch_and_number_selection(self):
-        self.run_function("create_node batch", "批量节点\n3\n")
+        self.run_function("create_node batch", "批量节点\n3\n\n")
         nodes = json.loads(self.run_cli("gen").stdout)
         self.assertEqual(len(nodes["users"]), 4)
         self.assertEqual(len({p["port"] for p in nodes["portBindings"]}), 4)
         result = self.run_function("select_node", "1\n")
         ids = sorted(f.stem for f in (self.data / "nodes").glob("*.json"))
         self.assertEqual(result.stdout.strip(), ids[0])
+
+    def test_specified_ports_and_creation_links(self):
+        result = self.run_function("create_node", "指定端口\n6200\n")
+        self.assertIn("&port=6200&", result.stdout)
+        result = self.run_function("create_node batch", "连续端口\n3\n6300\n")
+        self.assertEqual(result.stdout.count("mierus://"), 3)
+        for port in (6300, 6301, 6302):
+            self.assertIn(f"&port={port}&", result.stdout)
+
+    def test_batch_port_validation_before_creation(self):
+        for answers in ("冲突\n3\n5101\n", "越界\n3\n65534\n"):
+            self.run_function('create_node batch', answers, overrides='die() { printf "%s" "$*" >&2; exit 42; }', expected_code=42)
+            self.assertEqual(len(list((self.data / "nodes").glob("*.json"))), 1)
 
     def test_auto_host_is_cached(self):
         (self.data / "settings.json").write_text(json.dumps({"host": "", "mtu": 1400, "seed": 42}))

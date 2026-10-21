@@ -161,10 +161,15 @@ create_node() {
     resolve_host
     port=$(free_port); protocol=TCP; count=1
     next=$(all_nodes | jq 'length + 1')
-    name=$(ask "节点名称 [mieru-$next，回车直接创建]: "); name=${name:-mieru-$next}
+    name=$(ask "节点名称 [mieru-$next]: "); name=${name:-mieru-$next}
+    sequential=no
     case "$mode" in
+      quick)
+        value=$(ask "监听端口 [$port，回车自动]: "); port=${value:-$port} ;;
       batch)
-        count=$(ask '创建数量 [5]: '); count=${count:-5} ;;
+        count=$(ask '创建数量 [5]: '); count=${count:-5}
+        value=$(ask "起始端口 [$port，回车自动分配]: ")
+        if [ -n "$value" ]; then port=$value; sequential=yes; fi ;;
       custom)
         value=$(ask "公网 IP / 域名 [$host]: "); host=${value:-$host}
         host_ok "$host" || die '公网地址无效'
@@ -176,11 +181,22 @@ create_node() {
     port_free "$port" || die "端口已被占用"
     case "$protocol" in TCP|UDP) ;; *) die "协议只能是 TCP 或 UDP" ;; esac
     number "$count" && [ "$count" -ge 1 ] && [ "$count" -le 100 ] || die "数量范围为 1-100"
+    if [ "$sequential" = yes ]; then
+        end_port=$((port + count - 1))
+        port_ok "$end_port" || die '连续端口超出 65535，请减小起始端口或数量'
+        check_port=$port
+        while [ "$check_port" -le "$end_port" ]; do
+            port_free "$check_port" || die "端口 $check_port 已被占用，本次未创建节点"
+            check_port=$((check_port + 1))
+        done
+    fi
     say "地址: $host  |  协议: $protocol  |  数量: $count"
     created=''
     n=1
     while [ "$n" -le "$count" ]; do
-        [ "$n" = 1 ] || port=$(free_port)
+        if [ "$n" -gt 1 ]; then
+            if [ "$sequential" = yes ]; then port=$((port + 1)); else port=$(free_port); fi
+        fi
         id=$(random_hex 6); username="m$(random_hex 4)"; password=$(random_hex 16)
         label=$name; [ "$count" = 1 ] || label="$name-$n"
         jq -n --arg id "$id" --arg name "$label" --arg host "$host" \
@@ -446,8 +462,8 @@ menu() {
         public_host=$(jq -r '.host | if . == "" then "首次创建时自动识别" else . end' "$DATA/settings.json")
         say "  公网地址: $public_host"
         say '───────────────── 创建节点 ─────────────────'
-        say ' 1. 快速创建         回车即可生成，默认 TCP'
-        say ' 2. 批量创建         名称 + 数量'
+        say ' 1. 快速创建         名称 + 端口，支持回车默认'
+        say ' 2. 批量创建         数量 + 起始端口，连续分配'
         say ' 3. 自定义创建       指定地址 / 端口 / 协议'
         say '───────────────── 管理节点 ─────────────────'
         say ' 4. 节点列表         5. 链接 / 二维码'
