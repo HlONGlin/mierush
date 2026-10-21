@@ -434,8 +434,11 @@ reset_credentials() {
     apply_config; export_links
 }
 uninstall() {
-    confirm=$(ask '删除程序、节点和凭据，输入 DELETE: ')
-    [ "$confirm" = DELETE ] || return 0
+    confirm=$(ask '删除程序、节点和凭据。仅输入 DELETE（不含冒号）确认: ')
+    if [ "$confirm" != DELETE ]; then
+        say '未输入 DELETE，已取消卸载，程序和节点数据仍保留。'
+        return 0
+    fi
     service_action stop || true
     if has rc-update; then rc-update del mierush default || true; fi
     if has systemctl; then systemctl disable mierush.service || true; fi
