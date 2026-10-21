@@ -78,11 +78,12 @@ class LinksTest(unittest.TestCase):
         for value in ("../settings", "", "ab12;echo bad", "deadbeef"):
             self.assertNotEqual(self.run_cli("link", value, check=False).returncode, 0)
 
-    def run_function(self, command, answers="", overrides="", expected_code=0):
+    def run_function(self, command, answers="", overrides="", expected_code=0, real_apply=False):
         functions = SCRIPT.read_text(encoding="utf-8").split('case "${1:-menu}" in')[0]
         # Exercise real interactive functions without starting host services.
         harness = self.data / "harness.sh"
-        harness.write_text(functions + "\napply_config() { :; }\n" + overrides + "\n" + command, encoding="utf-8", newline="\n")
+        stub = "" if real_apply else "\napply_config() { :; }\n"
+        harness.write_text(functions + "\n" + stub + overrides + "\n" + command, encoding="utf-8", newline="\n")
         result = subprocess.run(
             ["sh", str(harness)],
             input=answers.encode("utf-8"), env={**os.environ, "MIERUSH_DATA_DIR": str(self.data)},
@@ -145,6 +146,36 @@ class LinksTest(unittest.TestCase):
             overrides='curl() { exit 99; }',
         )
         self.assertEqual(result.stdout, "3.38.1")
+
+    def test_apply_after_daemon_stopped(self):
+        result = self.run_function("apply_config", real_apply=True, overrides='''
+MITA=/bin/true
+started=no
+core() {
+    case "$1" in
+        status) [ "$started" = yes ] || return 1; printf '\\"RUNNING\\"\\n' ;;
+        replace) printf 'unexpected replace on stopped daemon' >&2; return 42 ;;
+    esac
+}
+service_action() {
+    [ "$1" = restart ] || return 1
+    jq -e '.portBindings[0].port == 5102' "$DATA/server.json" >/dev/null
+    started=yes
+}
+''')
+        self.assertNotIn("unexpected replace", result.stderr)
+        self.assertTrue((self.data / "server.json").exists())
+
+    def test_online_config_rejection_prevents_restart(self):
+        result = self.run_function("apply_config", real_apply=True, expected_code=1, overrides='''
+MITA=/bin/true
+core() {
+    case "$1" in status) return 0 ;; replace) return 1 ;; esac
+}
+service_action() { printf 'unexpected restart'; }
+''')
+        self.assertNotIn("unexpected restart", result.stdout)
+        self.assertFalse((self.data / "server.json").exists())
 
     def test_oneclick_process_substitution_install(self):
         source = (SCRIPT.parent / "one-click.sh").read_text(encoding="utf-8")

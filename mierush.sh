@@ -2,7 +2,7 @@
 # mierush - POSIX sh terminal manager for the official mieru server (mita).
 set -eu
 umask 077
-MIERUSH_VERSION="1.2.0"
+MIERUSH_VERSION="1.2.1"
 DATA="${MIERUSH_DATA_DIR:-/etc/mierush}"
 MITA="${MIERUSH_MITA_BIN:-/usr/local/bin/mita}"
 SELF="/usr/local/bin/mierush"
@@ -90,7 +90,9 @@ apply_config() {
         mv "$tmp" "$DATA/server.json"
         return
     fi
-    if [ -x "$MITA" ] && [ -S "$DATA/runtime/mita.sock" ]; then
+    # A stopped daemon can leave its Unix socket behind. Probe RPC, not the
+    # filesystem entry, before attempting an online configuration validation.
+    if [ -x "$MITA" ] && core status >/dev/null 2>&1; then
         if ! core replace config "$tmp"; then
             rm -f "$tmp"
             die "mita 拒绝配置，运行配置未替换"
