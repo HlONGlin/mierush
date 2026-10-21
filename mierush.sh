@@ -2,11 +2,12 @@
 # mierush - POSIX sh terminal manager for the official mieru server (mita).
 set -eu
 umask 077
-MIERUSH_VERSION="1.1.0"
+MIERUSH_VERSION="1.2.0"
 DATA="${MIERUSH_DATA_DIR:-/etc/mierush}"
 MITA="${MIERUSH_MITA_BIN:-/usr/local/bin/mita}"
 SELF="/usr/local/bin/mierush"
-RELEASE="${MIERUSH_CORE_VERSION:-3.38.1}"
+RELEASE="${MIERUSH_CORE_VERSION:-}"
+REPO_RAW="${MIERUSH_REPO_RAW:-https://raw.githubusercontent.com/HlONGlin/mierush/main}"
 DOWNLOAD_BASE="${MIERUSH_DOWNLOAD_BASE:-https://github.com/enfein/mieru/releases/download}"
 
 say() { printf '%s\n' "$*"; }
@@ -253,7 +254,47 @@ settings() {
     apply_config
 }
 download() { curl -fL --retry 3 --connect-timeout 15 -o "$2" "$1"; }
-install_core() {
+update_manager() (
+    root
+    has curl || die '缺少 curl，请使用一键脚本安装'
+    work=$(mktemp -d)
+    trap 'rm -rf "$work"' EXIT
+    say '下载最新版管理脚本...'
+    download "$REPO_RAW/mierush.sh" "$work/mierush.sh"
+    grep -q '^MIERUSH_VERSION=' "$work/mierush.sh" || die '管理脚本内容无效'
+    sh -n "$work/mierush.sh"
+    say "管理脚本: $MIERUSH_VERSION → $(sh "$work/mierush.sh" version)"
+    sh "$work/mierush.sh" install
+)
+resolve_release() {
+    if [ -z "$RELEASE" ]; then
+        say '查询官方最新稳定版核心...' >&2
+        metadata=$(curl -fsSL --retry 2 --connect-timeout 10 --max-time 30 \
+            https://api.github.com/repos/enfein/mieru/releases/latest) || die '查询最新版本失败，可设置 MIERUSH_CORE_VERSION 指定版本重试'
+        RELEASE=$(printf '%s' "$metadata" | jq -er '.tag_name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) | ltrimstr("v")') || die '官方版本信息无效'
+    fi
+    printf '%s' "$RELEASE" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || die '核心版本格式应为 x.y.z'
+}
+rollback_install() {
+    code=$?
+    trap - EXIT
+    if [ "$code" -ne 0 ] && [ "$replacing" = yes ]; then
+        say '安装失败，恢复更新前的程序和配置...' >&2
+        service_action stop || true
+        for item in mita mierush server.json openrc systemd; do
+            case "$item" in
+                mita) target=$MITA ;; mierush) target=$SELF ;; server.json) target="$DATA/server.json" ;;
+                openrc) target=/etc/init.d/mierush ;; systemd) target=/etc/systemd/system/mierush.service ;;
+            esac
+            if [ -f "$work/backup/$item" ]; then cp -p "$work/backup/$item" "$target"; else rm -f "$target"; fi
+        done
+        if has systemctl; then systemctl daemon-reload || true; fi
+        if [ "$was_running" = yes ]; then service_action start || true; fi
+    fi
+    rm -rf "$work"
+    exit "$code"
+}
+install_core() (
     root
     # Service paths are intentionally fixed for installed deployments.
     [ "$DATA" = /etc/mierush ] && [ "$MITA" = /usr/local/bin/mita ] || die "install 不支持自定义数据/核心路径"
@@ -268,12 +309,15 @@ install_core() {
         yum install -y curl jq ca-certificates tar coreutils iproute
     else die "不支持的包管理器"; fi
     deps; init_data
+    resolve_release
+    say "目标核心版本: $RELEASE"
     case "$(uname -m)" in
         x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;;
         *) die "官方 mita 仅提供 amd64 / arm64 服务端发行包" ;;
     esac
     work=$(mktemp -d)
-    trap 'rm -rf "$work"' EXIT
+    replacing=no; was_running=no
+    trap rollback_install EXIT
     asset="mita_${RELEASE}_linux_${arch}.tar.gz"
     url="$DOWNLOAD_BASE/v$RELEASE/$asset"
     download "$url" "$work/$asset"
@@ -291,14 +335,26 @@ install_core() {
         if has apk; then addgroup -S mita; adduser -S -D -H -G mita mita
         else useradd --system --no-create-home --shell /usr/sbin/nologin mita; fi
     fi
+    mkdir "$work/backup"
+    [ ! -f "$MITA" ] || cp -p "$MITA" "$work/backup/mita"
+    [ ! -f "$SELF" ] || cp -p "$SELF" "$work/backup/mierush"
+    [ ! -f "$DATA/server.json" ] || cp -p "$DATA/server.json" "$work/backup/server.json"
+    [ ! -f /etc/init.d/mierush ] || cp -p /etc/init.d/mierush "$work/backup/openrc"
+    [ ! -f /etc/systemd/system/mierush.service ] || cp -p /etc/systemd/system/mierush.service "$work/backup/systemd"
+    if [ -x "$MITA" ] && [ -S "$DATA/runtime/mita.sock" ]; then
+        if core status 2>&1 | grep -q '"RUNNING"'; then was_running=yes; fi
+    fi
+    replacing=yes
     if [ -f "$SELF" ]; then service_action stop || true; fi
     install -m 755 "$binary" "$MITA"
     if [ "$(readlink -f "$0")" != "$SELF" ]; then install -m 755 "$0" "$SELF"; fi
     if [ ! -e /usr/local/bin/mi ] || [ -L /usr/local/bin/mi ]; then ln -sf "$SELF" /usr/local/bin/mi; fi
     generate > "$DATA/server.json"
     install_service
-    say "安装完成，运行 mi 进入面板。核心版本: $RELEASE"
-}
+    replacing=no
+    say "✓ 安装/更新成功：管理脚本 $MIERUSH_VERSION / 核心 $RELEASE"
+    say '运行 mi 进入面板；没有节点时服务不监听，快速创建后自动启动。'
+)
 install_service() {
     if has rc-service; then
         cat > /etc/init.d/mierush <<'RC'
@@ -399,7 +455,7 @@ menu() {
         say '───────────────── 服务设置 ─────────────────'
         say ' 8. 启动 / 重启      9. 停止服务'
         say '10. 状态 / 日志     11. 用户流量'
-        say '12. 全局设置        13. 安装 / 更新核心'
+        say '12. 全局设置        13. 更新脚本与核心'
         say '14. 重置全部凭据    15. 卸载'
         say ' 0. 退出'
         choice=$(ask '选项: ') || return 0
@@ -424,7 +480,7 @@ menu() {
             10) status ;;
             11) core get users || true ;;
             12) sh "$0" settings || true ;;
-            13) sh "$0" install || true ;;
+            13) sh "$0" update || true; say '更新后请退出并重新运行 mi，载入新版面板。' ;;
             14) sh "$0" reset-credentials || true ;;
             15) sh "$0" uninstall || true; return ;;
             *) say '无效选项' ;;
@@ -433,12 +489,13 @@ menu() {
     done
 }
 usage() {
-    say 'mierush [install|menu|create|batch|custom|list|show-link|edit|settings|link ID|export|subscription|gen|apply|start|stop|restart|status|reset-credentials|uninstall|version]'
+    say 'mierush [install|update|menu|create|batch|custom|list|show-link|edit|settings|link ID|export|subscription|gen|apply|start|stop|restart|status|reset-credentials|uninstall|version]'
 }
 case "${1:-menu}" in
     version|--version|-v) say "$MIERUSH_VERSION"; exit ;;
     help|--help|-h) usage; exit ;;
     install) install_core; exit ;;
+    update) update_manager; exit ;;
 esac
 deps
 case "${1:-menu}" in

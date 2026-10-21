@@ -121,6 +121,33 @@ class LinksTest(unittest.TestCase):
         result = self.run_function("resolve_host", overrides="curl() { exit 99; }")
         self.assertNotIn("正在识别", result.stderr)
 
+    def test_latest_and_pinned_core_version(self):
+        result = self.run_function(
+            'RELEASE=""; resolve_release; printf "%s" "$RELEASE"',
+            overrides='curl() { printf \'{"tag_name":"v3.39.2"}\'; }',
+        )
+        self.assertEqual(result.stdout, "3.39.2")
+        result = self.run_function(
+            'RELEASE="3.38.1"; resolve_release; printf "%s" "$RELEASE"',
+            overrides='curl() { exit 99; }',
+        )
+        self.assertEqual(result.stdout, "3.38.1")
+
+    def test_oneclick_process_substitution_install(self):
+        source = (SCRIPT.parent / "one-click.sh").read_text(encoding="utf-8")
+        # Preserve the actual menu dispatch, substitute only the installer body.
+        start = source.index("install_manager() (")
+        end = source.index("\nrun_manager()", start)
+        source = source[:start] + 'install_manager() ( printf "INSTALL_CALLED\\n"; )' + source[end:]
+        harness = self.data / "oneclick-test.sh"
+        harness.write_text(source, encoding="utf-8", newline="\n")
+        result = subprocess.run(
+            ["bash", "-c", 'bash <(cat "$1")', "test", str(harness)],
+            input=b"1\n0\n", capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertIn(b"INSTALL_CALLED", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

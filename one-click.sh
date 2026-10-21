@@ -3,6 +3,7 @@ set -eu
 REPO_RAW="${MIERUSH_REPO_RAW:-https://raw.githubusercontent.com/HlONGlin/mierush/main}"
 BIN=/usr/local/bin/mierush
 install_manager() (
+    set -eu
     [ "$(id -u)" = 0 ] || { printf '请使用 root 运行\n' >&2; exit 1; }
     if ! command -v curl >/dev/null 2>&1; then
         if command -v apk >/dev/null 2>&1; then apk add --no-cache curl ca-certificates
@@ -33,7 +34,9 @@ case "${1:-menu}" in
             printf '\n=== mierush 一键部署 ===\n1. 安装/更新\n2. 启动\n3. 停止\n4. 彻底卸载\n5. 重置节点凭据\n6. 节点管理面板\n0. 退出\n选项: '
             IFS= read -r choice || exit 0
             case "$choice" in
-                1) sh "$0" install || true ;; 2) run_manager start || true ;;
+                1) set +e; install_manager; result=$?; set -e
+                   [ "$result" -eq 0 ] || printf '安装/更新失败，请检查上方错误后重试。\n' >&2 ;;
+                2) run_manager start || true ;;
                 3) run_manager stop || true ;; 4) run_manager uninstall || true ;;
                 5) run_manager reset-credentials || true ;; 6) run_manager menu || true ;;
                 0) exit ;; *) printf '无效选项\n' ;;

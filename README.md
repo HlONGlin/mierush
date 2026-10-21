@@ -40,7 +40,25 @@ curl -fsSL https://github.com/HlONGlin/mierush/raw/main/one-click.sh -o /tmp/mie
 mi
 ```
 
-本地部署也可以执行 `sh mierush.sh install`。默认安装官方核心 **v3.38.1**，下载 tar.gz 并验证官方 SHA256 文件。更新核心可执行 `MIERUSH_CORE_VERSION=3.38.1 sh mierush.sh install`。更新管理脚本请重新运行一键安装。
+本地部署也可以执行 `sh mierush.sh install`。默认查询并安装官方**最新稳定版** mita 核心，下载 tar.gz 并验证官方 SHA256 文件。安装前显示目标核心版本，完成后显示管理脚本和核心版本。有已启用节点时，还会检查代理是否进入 `RUNNING` 状态。
+
+### 更新已安装的版本
+
+在节点面板选择 **`13` 更新脚本与核心**，或执行：
+
+```sh
+mierush update
+```
+
+此操作从本项目 `main` 分支下载新版管理脚本，并安装官方最新稳定版核心，保留节点和设置。更新后重新运行 `mi` 载入新版面板，也可重新执行上方一键脚本并选择 `1`。
+
+需要指定核心版本时：
+
+```sh
+MIERUSH_CORE_VERSION=3.38.1 mierush update
+```
+
+下载、校验和二进制验证完成后才替换程序；替换后发生安装或启动失败时，会尝试恢复原程序、生成配置和服务定义，并恢复此前运行的服务。首次安装且没有节点时不启动监听，创建节点后自动启动。
 
 ## 功能
 
@@ -70,7 +88,7 @@ mi
   7. 导出链接 / 订阅   8. 启动 / 重启
   9. 停止服务         10. 状态 / 日志
  11. 用户流量         12. 全局设置
- 13. 安装 / 更新核心  14. 重置全部凭据
+ 13. 更新脚本与核心   14. 重置全部凭据
  15. 卸载              0. 退出
 ```
 
@@ -93,7 +111,8 @@ mierus://<用户名>:<密码>@<服务器>?handshake-mode=HANDSHAKE_NO_WAIT&mtu=1
 ## 常用命令
 
 ```sh
-mierush install              # 安装/更新核心和依赖
+mierush install              # 安装当前脚本及最新核心、依赖
+mierush update               # 下载并更新管理脚本与最新核心
 mierush create               # 快速创建，只询问名称
 mierush batch                # 批量创建，只询问名称和数量
 mierush custom               # 自定义地址、端口、协议和数量
